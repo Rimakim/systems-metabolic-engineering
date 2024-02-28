@@ -1,3 +1,4 @@
+
 import os
 import cobra
 from cobra.io import read_sbml_model
@@ -552,8 +553,7 @@ if __name__=='__main__':
     
     
     df = pd.DataFrame()
-    iter_num = 3
-    model = read_sbml_model('./e_coli_core.xml')
+    model = read_sbml_model(model_path)
     
     if len(manipulation_target_iter) < iter_num:
             manipulation_target_iter = manipulation_target_iter + (iter_num - len(manipulation_target_iter)) * ['-']
@@ -561,14 +561,41 @@ if __name__=='__main__':
     for i in range(iter_num):
         if manipulation_target_iter[i] == '-':
             pass
-        else:
-            df[f'step{i+1}'] = [optimized_biomass_iter[i], 
-                                optimized_target_iter, 
-                                [rxn for rxn in manipulation_target_iter[i]], 
-                                [model.reactions.get_by_id(rxn[:-7]).name for rxn in manipulation_target_iter[i]], 
-                                [model.reactions.get_by_id(rxn[:-7]).gene_reaction_rule for rxn in manipulation_target_iter[i]]]
             
-    output_dir = 'optreg_res'        
+        else:
+            biomass_value = optimized_biomass_iter[i]
+            objective_value = optimized_target_iter[i]
+            manipulation_targets = manipulation_target_iter[i]
+            manipulation_target_names = [] 
+            manipulation_target_GPRs = []
+
+            for tgt in manipulation_targets:
+
+                if '_for' in tgt:
+                    manipulation_target_names.append(model.reactions.get_by_id(tgt[:-7]).name)
+                    manipulation_target_GPRs.append(model.reactions.get_by_id(tgt[:-7]).gene_reaction_rule)
+
+                elif '_rev' in tgt:
+                    manipulation_target_names.append(model.reactions.get_by_id(tgt[:-7]).name)
+                    manipulation_target_GPRs.append(model.reactions.get_by_id(tgt[:-7]).gene_reaction_rule)
+
+                else: 
+                    manipulation_target_names.append(model.reactions.get_by_id(tgt[:-3]).name)
+                    manipulation_target_GPRs.append(model.reactions.get_by_id(tgt[:-3]).gene_reaction_rule)
+                    
+
+            
+
+                
+                    
+                    
+            df[f'step{i+1}'] = [biomass_value, 
+                                objective_value, 
+                                manipulation_targets, 
+                                manipulation_target_names, 
+                                manipulation_target_GPRs
+                               ]
+                    
     df.index = ['biomass', 'objective', 'manipulation targets', 'manipulation target names', 'manipulation target GPRs']
     df.to_csv(f'./{output_path}.csv', encoding = 'cp949')
 
