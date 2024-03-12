@@ -27,6 +27,7 @@ if __name__=='__main__':
     eps = options.eps
     oxygen_condition = options.oxygen_condition
     fraction_of_optimum = options.fraction_of_optimum
+    loopless = options.loopless
     
     iter_num = options.iter_num
     cpu_num = options.cpu_num
@@ -57,22 +58,32 @@ if __name__=='__main__':
             # oxygen_condition
             if self.oxygen_condition  == 'anaerobic':
                 self.model.reactions.EX_o2_e.lower_bound = 0
+            else:
+                pass
     
         
-        def calculate_cellular_state(self):
+        def calculate_cellular_state(self, loopless):
     
             self.rxn_ub = {}
             self.rxn_lb = {}
             self.vo_u = {}
             self.vo_l = {}
+
+            self.loopless = loopless
     
-            # calculation cellular max, min with loopless FBA
+            # calculation cellular max, min with FBA
             print('finding cellular flux max, min, steady-state value...')
+
+            
+            if self.loopless == 'T':
+                add_loopless(self.model)
+            else:
+                pass
+                
+
             for rxn in tqdm(self.model.reactions):
         
                 with self.model as m:
-                    
-                    add_loopless(m)
                     m.objective = rxn.id
                     
                     ub = m.optimize(objective_sense = 'maximize')
@@ -82,10 +93,16 @@ if __name__=='__main__':
                     self.rxn_lb[rxn.id] = lb.objective_value
 
             
-            # calculation steady-state range with loopless FVA
+            # calculation steady-state range with FVA
             with self.model as m:
+                
                 m.objective = self.biomass_rxn
-                fva_sol = fva(m, fraction_of_optimum=self.f_opt, loopless=True)
+
+                if self.loopless == 'T':
+                    fva_sol = fva(m, fraction_of_optimum=self.f_opt, loopless=True)
+                else:
+                    fva_sol = fva(m, fraction_of_optimum=self.f_opt, loopless=False)
+
             
             for rxn in self.model.reactions:
                 self.vo_u[rxn.id] = fva_sol.loc[rxn.id, 'maximum']
@@ -107,6 +124,9 @@ if __name__=='__main__':
             
                 else:
                     self.for_rev_list.append(rxn.id) 
+
+
+            return self.rxn_ub, self.rxn_lb, self.vo_u, self.vo_l
     
     
         def model_setting(self, cpu_num, default_bound):
@@ -128,7 +148,8 @@ if __name__=='__main__':
     
     
         def variable_setting(self):
-    
+            
+            self.flux = {}
             self.v = {}
     
             '''
@@ -138,7 +159,10 @@ if __name__=='__main__':
             only reverse: rxn name_rev
             reversible: both are included
             '''
-            
+            # true flux value
+            for rxn in self.model.reactions:
+                self.flux[rxn.id] = self.m.addVar(lb = self.rxn_lb[rxn.id], ub = self.rxn_ub[rxn.id], name = f'{rxn.id} flux')
+                
             for rxn in self.model.reactions:
             
                 if rxn.id in self.for_list:
@@ -249,10 +273,10 @@ if __name__=='__main__':
                 self.yd[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')     # on = 0, off = 1
                
                 
-                self.zku[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO ub z')
-                self.zkl[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO lb z')
-                self.zul[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} up lb z')
-                self.zdu[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} down ub z')
+                self.zku[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} KO ub z')
+                self.zkl[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} KO lb z')
+                self.zul[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} up lb z')
+                self.zdu[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} down ub z')
             
                 if rxn[:-4] == self.biomass_rxn or rxn[:-4] == 'ATPM':
                     self.d_bio_atp[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} min dual')
@@ -317,16 +341,32 @@ if __name__=='__main__':
     
             '''
             <primal constraints>
-            
+            0. flux = vf-vr
             1. Stoichiometric constraints 
             2. KO constraints
             3. UP_regulation constraints
             4. DOWN_regulation constraints
             5. minimal biomass, ATPM constraints
             '''
+
+            # 0. flux constraints
+            
+            for rxn in self.flux.keys():
+
+                if rxn in self.for_list:
+                    self.m.addConstr(self.flux[rxn] - self.v[f'{rxn}_for'] == 0)
+
+                elif rxn in self.rev_list:
+                    self.m.addConstr(self.flux[rxn] + self.v[f'{rxn}_rev'] == 0)
+
+                else:
+                    self.m.addConstr(self.flux[rxn] - self.v[f'{rxn}_for'] + self.v[f'{rxn}_rev'] == 0)
+            
+            
             # 1. Stoichiometric constraints
+            
             for met in tqdm(self.model.metabolites):
-                self.m.addConstr(quicksum( self.v[var_id]*self.coff_value[var_id, met_id] for var_id, met_id in self.pair.select('*', met.id) ) == 0,
+                self.m.addConstr(quicksum( self.v[val_id]*self.coff_value[val_id, met_id] for val_id, met_id in self.pair.select('*', met.id) ) == 0,
                            name = f'{met.id} mass balance')
             
             self.m.update()
@@ -367,7 +407,7 @@ if __name__=='__main__':
             for var in tqdm(self.v.keys()):
                 
                 if var[:-4] == self.biomass_rxn:
-                    self.m.addConstr(quicksum(self.coff_value[val_id, met_id] * self.ds[met_id] for val_id, met_id in self.pair.select(var, '*')) 
+                    self.m.addConstr(quicksum(self.coff_value[var_id, met_id] * self.ds[met_id] for var_id, met_id in self.pair.select(var, '*')) 
                                 + self.qku[var] - self.qkl[var] + self.quu[var] - self.qul[var] + self.qdu[var] - self.qdl[var] - self.d_bio_atp[var] >= 1 - self.eps)
                 
                 elif var[:-4] == 'ATPM':
@@ -462,19 +502,20 @@ if __name__=='__main__':
             rev = quicksum((1-self.yk[var[:-4]]) + (1-self.yu[var]) + (1-self.yd[var]) for var in self.v.keys() if var[:-4] in self.for_rev_list)
             irrev = quicksum((1-self.yk[var]) + (1-self.yu[var]) + (1-self.yd[var]) for var in self.v.keys() if var[:-4] not in self.for_rev_list)
             
-            self.m.addConstr(rev + irrev <= self.L)
+            self.m.addConstr(rev + irrev <= self.L + 0.1)
             
             # 3. In reversible reactions, forward and reverse reactions cannot be up or down-regulated at the same time.
             for rxn in self.for_rev_list:
                 
-                self.m.addConstr(self.yu[f'{rxn}_for'] + self.yu[f'{rxn}_rev'] >= 1)
-                self.m.addConstr(self.yd[f'{rxn}_for'] + self.yd[f'{rxn}_rev'] >= 1)
-            
+                self.m.addConstr(self.yu[f'{rxn}_for'] + self.yu[f'{rxn}_rev'] + self.yd[f'{rxn}_for'] + self.yd[f'{rxn}_rev'] >= 2.9)
+               
+                
             # 4. Reactions that are NOT linked with gene_reaction_rule cannot be manipulated. (yk, yu, yd values are always 1) 
     
             for val in self.v.keys():
-                if self.model.reactions.get_by_id(val[:-4]).gene_reaction_rule == '':
-                    
+                gpr = self.model.reactions.get_by_id(val[:-4]).gene_reaction_rule
+                
+                if gpr == '' or 's' in gpr or 'tex' in val:    # not linked GPR or spontaneous reactions    
                     self.m.addConstr(self.yu[val] == 1)
                     self.m.addConstr(self.yd[val] == 1)
             
@@ -482,6 +523,8 @@ if __name__=='__main__':
                         self.m.addConstr(self.yk[val[:-4]] == 1)
                     else:
                         self.m.addConstr(self.yk[val] == 1)
+
+                
                         
             
             self.m.update()
@@ -491,11 +534,19 @@ if __name__=='__main__':
             <Objective function>
             Maximize target chemical
             '''
-            if self.target_rxn in self.for_rev_list:
-                self.m.setObjective(self.v[f'{self.target_rxn}_for'] - self.v[f'{self.target_rxn}_rev'], GRB.MAXIMIZE)
+            
+            self.m.setObjective(self.flux[self.target_rxn], GRB.MAXIMIZE)
+
+            '''
+            <Objective function>
+            Maximize target chemical
+            '''
+            
+            #if self.target_rxn in self.for_rev_list:
+                #self.m.setObjective(self.v[f'{self.target_rxn}_for'] - self.v[f'{self.target_rxn}_rev'], GRB.MAXIMIZE)
                     
-            else:
-                self.m.setObjective(self.v[f'{self.target_rxn}_for'], GRB.MAXIMIZE)
+            #else:
+                #self.m.setObjective(self.v[f'{self.target_rxn}_for'], GRB.MAXIMIZE)
     
     
         def return_results(self):
@@ -510,8 +561,9 @@ if __name__=='__main__':
                 print('iterations:', i+1)
                 
                 self.m.optimize()
+                opt_status = self.m.status
                 
-                if self.m.status == 2:
+                if opt_status in (2, 13):
     
                     manipulation_target = []
                     manipulation_state = []
@@ -541,24 +593,36 @@ if __name__=='__main__':
                     optimized_biomass_iter.append(self.v[f'{self.biomass_rxn}_for'].x)
                     optimized_target_iter.append(self.v[f'{self.target_rxn}_for'].x)
                     
-                    # manipulated reactions in previous stepnext step
+                    # manipulated reactions in previous step
                     for rxn_id in manipulation_target:
 
-                        self.m.addConstr(self.yu[rxn_id].x > 0.9)
-                        self.m.addConstr(self.yd[rxn_id].x > 0.9)
+                        if '_for' not in rxn_id and '_rev' not in rxn_id:
+                            self.m.addConstr(self.yu[f'{rxn_id}_for'] == 1)
+                            self.m.addConstr(self.yd[f'{rxn_id}_rev'] == 1)
+
+                        else:
+                            self.m.addConstr(self.yu[rxn_id] == 1)
+                            self.m.addConstr(self.yd[rxn_id] == 1)
+                            
 
                         if rxn_id[:-4] in self.for_rev_list:
-                            self.m.addConstr(self.yk[rxn_id[:-4]].x > 0.9)
+                            self.m.addConstr(self.yk[rxn_id[:-4]] == 1)
+                            
                         else:
-                            self.m.addConstr(self.yk[rxn_id].x > 0.9)
-                        
+                            self.m.addConstr(self.yk[rxn_id] == 1)
+
+                    self.m.update()
                         
                    
                 else:
                     break
                     
-            return manipulation_target_iter, optimized_biomass_iter, optimized_target_iter
+            return manipulation_target_iter, optimized_biomass_iter, optimized_target_iter, opt_status
+
     
+    '''
+    Run OptReg and Output results
+    '''
     
     optreg = OptReg(model_path = model_path,
                     biomass_lb = biomass_lb,
@@ -570,13 +634,14 @@ if __name__=='__main__':
                     fraction_of_optimum = fraction_of_optimum,
                     iter_num = iter_num)
     
-    optreg.calculate_cellular_state()
+    rxn_ub, rxn_lb, vo_u, vo_l = optreg.calculate_cellular_state()
+    
     optreg.model_setting(cpu_num = cpu_num, default_bound = default_bound)
     optreg.variable_setting()
     optreg.make_S_matrix()
     optreg.add_constraints()
     
-    manipulation_target_iter, optimized_biomass_iter, optimized_target_iter = optreg.return_results()
+    manipulation_target_iter, optimized_biomass_iter, optimized_target_iter, opt_status = optreg.return_results()
     
     
     df = pd.DataFrame()
@@ -626,7 +691,18 @@ if __name__=='__main__':
     df.index = ['biomass', 'objective', 'manipulation targets', 'manipulation target names', 'manipulation target GPRs']
     df.to_csv(f'./{output_path}.csv', encoding = 'cp949')
 
+    df_cell = pd.DataFrame()
+
+    for rxn in model.reactions:
+        df_cell[rxn.id] = [rxn_lb[rxn.id], vo_l[rxn.id], vo_u[rxn.id], rxn_ub[rxn.id]]
+
+    df_cell.index = ['V_min', 'Vo_lb', 'Vo_ub', 'V_max']
+    
+    df_cell = df_cell.transpose()
+    df_cell.to_csv(f'./{output_path}_cellular_state.csv', encoding = 'cp949')
+
     print(df)
+    print(opt_status)
 
 
 
