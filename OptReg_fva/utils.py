@@ -10,12 +10,17 @@ def argument_parser(version=None):
     parser.add_argument('-m', '--model_path', 
                         required=True, help='Input model path')
     
-    parser.add_argument('-b', '--biomass_lb', required=False, type=float,
-                        default = 0.1,
-                        help='minimal biomass production')
+    parser.add_argument('-s', '--strain', required=False, 
+                        default = None,
+                        choices = ['e_coli', 's_cerevisiae', 'a_niger', 'c_glutamicum'],
+                        help='strain name')
     
     parser.add_argument('-o', '--output_path', required=True, 
                         help='Input output path')
+
+    parser.add_argument('-b', '--biomass_lb', required=False, type=float,
+                        default = 0.1,
+                        help='minimal biomass production')
     
     parser.add_argument('-t', '--target_rxn', required=True, 
                         help='Target chemical production reaction ID')
@@ -43,9 +48,9 @@ def argument_parser(version=None):
 
     parser.add_argument('-loopless', '--loopless', required=False, 
                         default='F', 
-                        choices=['T', 'F']
+                        choices=['T', 'F'],
                         help='loopless on/off for FBA, FVA (cell state calculation)')
-                        
+
     
     parser.add_argument('-cpu', '--cpu_num', required=False, type=int,
                         default=8, 
@@ -59,3 +64,7 @@ def argument_parser(version=None):
                        help = 'iteration number')
    
     return parser
+
+
+
+
