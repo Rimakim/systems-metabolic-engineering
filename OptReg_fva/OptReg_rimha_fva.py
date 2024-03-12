@@ -19,6 +19,7 @@ if __name__=='__main__':
     options = parser.parse_args()
 
     model_path = options.model_path
+    strain = options.strain
     output_path = options.output_path
     biomass_lb = options.biomass_lb
     target_rxn = options.target_rxn
@@ -34,11 +35,16 @@ if __name__=='__main__':
     default_bound = options.default_bound
 
 
+
+
+
+    
     class OptReg:
     
-        def __init__(self, model_path, biomass_lb, target_rxn, L, C, eps, oxygen_condition, fraction_of_optimum, iter_num):
+        def __init__(self, model_path, strain, biomass_lb, target_rxn, L, C, eps, oxygen_condition, fraction_of_optimum, iter_num):
     
             self.model = read_sbml_model(model_path)
+            self.strain = strain
             self.target_rxn = target_rxn
             self.biomass_lb = biomass_lb
             self.L = L
@@ -55,13 +61,73 @@ if __name__=='__main__':
                 if rxn.objective_coefficient == 1:
                     self.biomass_rxn = rxn.id
 
-            # oxygen_condition
+            # oxygen condition
             if self.oxygen_condition  == 'anaerobic':
                 self.model.reactions.EX_o2_e.lower_bound = 0
             else:
                 pass
+
+            
+            # Possible execretion condition
+            '''
+            Originated from Kamp et al. Nature Comm. (2017)
+            
+            <E.coli(iML1515)>
+            ethanol, lactate, formate, succinate, hydrogen, methanol
+            
+            <S.cerevisiae(iMM904)>
+            ethanol, glycerol, pyruvate, acetate, succinate
+            
+            <A.niger>
+            gluconate, citrate, oxalate, malate, succinate, erythritol
+            
+            <C.glutamicum>
+            glutamate, succinate, lysine, lactate, acetate, alanine, isoleucine, glycine
+            '''
+
+            if self.strain == 'e_coli':
+                
+                pos_ex_list = [self.target_rxn, 'EX_ac_e', 'EX_co2_e', 'EX_etoh_e', 
+                               'EX_for_e', 'EX_h_e', 'EX_lac__L_e', 
+                               'EX_succ_e', 'EX_meoh_e', 'EX_h2o_e'
+                              ]
+
+                # execretion flux = 0 if metabolite is organic chemocals 
+                for rxn in self.model.reactions:
+                    
+                    if 'EX_' not in rxn.id:
+                        continue
+                    if rxn.upper_bound <= 0:
+                        continue
     
-        
+                    met = self.model.metabolites.get_by_id(rxn.id[3:])
+                    formula = met.formula
+                    
+                    if 'C' in formula and 'H' in formula and 'O' in formula: # organic chemicals
+                        rxn.upper_bound = 0
+    
+                
+                for rxn_id in pos_ex_list:
+                    self.model.reactions.get_by_id(rxn_id).upper_bound = 1000
+
+            else:
+                pass
+
+        def essential_reactions(self):
+
+            essential_list = []
+            
+            with self.model as m:
+                for rxn in m.reactions:
+                    m.reactions.get_by_id(rxn.id).knock_out()
+                    sol = m.slim_optimize()
+
+                    if sol < self.biomass_lb:
+                        essential_list.append(rxn.id)
+
+            return essential_list
+                    
+
         def calculate_cellular_state(self, loopless):
     
             self.rxn_ub = {}
@@ -94,6 +160,7 @@ if __name__=='__main__':
 
             
             # calculation steady-state range with FVA
+            
             with self.model as m:
                 
                 m.objective = self.biomass_rxn
@@ -362,6 +429,8 @@ if __name__=='__main__':
                 else:
                     self.m.addConstr(self.flux[rxn] - self.v[f'{rxn}_for'] + self.v[f'{rxn}_rev'] == 0)
             
+            self.m.update()
+
             
             # 1. Stoichiometric constraints
             
@@ -485,7 +554,8 @@ if __name__=='__main__':
             1. Each reaction can have only one(or zero) regulation state.
             2. Maximum regulations
             3. In reversible reactions, forward and reverse reactions cannot be up or down-regulated at the same time.
-            4. Reactions that are NOT linked with GPR cannot be manipulated. (yk, yu, yd values are always 1) 
+            4. Reactions that are NOT linked with GPR cannot be manipulated. (yk, yu, yd values are always 1)
+            5. Do not KO Essential genes: make biomass < min_biomass when Knockouted 
             '''
     
             # 1. Each reaction can have only one(or zero) regulation state.
@@ -505,8 +575,8 @@ if __name__=='__main__':
             self.m.addConstr(rev + irrev <= self.L + 0.1)
             
             # 3. In reversible reactions, forward and reverse reactions cannot be up or down-regulated at the same time.
-            for rxn in self.for_rev_list:
-                
+            
+            for rxn in self.for_rev_list:    
                 self.m.addConstr(self.yu[f'{rxn}_for'] + self.yu[f'{rxn}_rev'] + self.yd[f'{rxn}_for'] + self.yd[f'{rxn}_rev'] >= 2.9)
                
                 
@@ -515,7 +585,7 @@ if __name__=='__main__':
             for val in self.v.keys():
                 gpr = self.model.reactions.get_by_id(val[:-4]).gene_reaction_rule
                 
-                if gpr == '' or 's' in gpr or 'tex' in val:    # not linked GPR or spontaneous reactions    
+                if gpr == '' or 's' in gpr or 'ex' in val:    # not linked GPR or spontaneous reactions    
                     self.m.addConstr(self.yu[val] == 1)
                     self.m.addConstr(self.yd[val] == 1)
             
@@ -524,8 +594,19 @@ if __name__=='__main__':
                     else:
                         self.m.addConstr(self.yk[val] == 1)
 
-                
-                        
+            
+            # 5. Do not KO Essential genes: make biomass < min_biomass when Knockouted
+
+            essential_list = self.essential_reactions()
+
+            for val in self.v.keys():
+                if val[:-4] in essential_list:
+
+                    if val[:-4] in self.for_rev_list:
+                        self.m.addConstr(self.yk[val[:-4]] == 1)
+                    else:
+                        self.m.addConstr(self.yk[val] == 1)
+                    
             
             self.m.update()
     
@@ -537,17 +618,7 @@ if __name__=='__main__':
             
             self.m.setObjective(self.flux[self.target_rxn], GRB.MAXIMIZE)
 
-            '''
-            <Objective function>
-            Maximize target chemical
-            '''
-            
-            #if self.target_rxn in self.for_rev_list:
-                #self.m.setObjective(self.v[f'{self.target_rxn}_for'] - self.v[f'{self.target_rxn}_rev'], GRB.MAXIMIZE)
-                    
-            #else:
-                #self.m.setObjective(self.v[f'{self.target_rxn}_for'], GRB.MAXIMIZE)
-    
+        
     
         def return_results(self):
     
@@ -558,6 +629,7 @@ if __name__=='__main__':
             # finding multiple manipulation target sets 
             for i in range(self.iter_num):  
                 
+                print()
                 print('iterations:', i+1)
                 
                 self.m.optimize()
@@ -584,7 +656,6 @@ if __name__=='__main__':
                             manipulation_target.append(rxn_id)
                             manipulation_state.append('_DW')
     
-                    print(manipulation_target)
                     
                     for tgt, ste in zip(manipulation_target, manipulation_state):
                         manipulation.append(tgt+ste)
@@ -619,12 +690,15 @@ if __name__=='__main__':
                     
             return manipulation_target_iter, optimized_biomass_iter, optimized_target_iter, opt_status
 
+
+##############################################################################################################################################
     
     '''
-    Run OptReg and Output results
+    <Run OptReg and Output results>
     '''
     
     optreg = OptReg(model_path = model_path,
+                    strain = strain,
                     biomass_lb = biomass_lb,
                     target_rxn = target_rxn,
                     L = max_manipulation,
@@ -632,9 +706,10 @@ if __name__=='__main__':
                     eps = eps, 
                     oxygen_condition = oxygen_condition,
                     fraction_of_optimum = fraction_of_optimum,
-                    iter_num = iter_num)
+                    iter_num = iter_num,
+                   )
     
-    rxn_ub, rxn_lb, vo_u, vo_l = optreg.calculate_cellular_state()
+    rxn_ub, rxn_lb, vo_u, vo_l = optreg.calculate_cellular_state(loopless = loopless)
     
     optreg.model_setting(cpu_num = cpu_num, default_bound = default_bound)
     optreg.variable_setting()
@@ -674,20 +749,18 @@ if __name__=='__main__':
                 else: 
                     manipulation_target_names.append(model.reactions.get_by_id(tgt[:-3]).name)
                     manipulation_target_GPRs.append(model.reactions.get_by_id(tgt[:-3]).gene_reaction_rule)
-                    
-
-            
-
-                
-                    
-                    
+                            
             df[f'step{i+1}'] = [biomass_value, 
                                 objective_value, 
                                 manipulation_targets, 
                                 manipulation_target_names, 
                                 manipulation_target_GPRs
                                ]
-                    
+
+
+
+    # Making result csv file
+    
     df.index = ['biomass', 'objective', 'manipulation targets', 'manipulation target names', 'manipulation target GPRs']
     df.to_csv(f'./{output_path}.csv', encoding = 'cp949')
 
@@ -701,8 +774,10 @@ if __name__=='__main__':
     df_cell = df_cell.transpose()
     df_cell.to_csv(f'./{output_path}_cellular_state.csv', encoding = 'cp949')
 
+    print()
     print(df)
-    print(opt_status)
+    print()
+    print('status:', opt_status)
 
 
 
