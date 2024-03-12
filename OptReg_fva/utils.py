@@ -41,6 +41,11 @@ def argument_parser(version=None):
                         default=0.95, 
                         help='fraction of optimum for FVA')
 
+    parser.add_argument('-loopless', '--loopless', required=False, 
+                        default='F', 
+                        choices=['T', 'F']
+                        help='loopless on/off for FBA, FVA (cell state calculation)')
+                        
     
     parser.add_argument('-cpu', '--cpu_num', required=False, type=int,
                         default=8, 
