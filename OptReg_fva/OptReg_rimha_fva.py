@@ -151,13 +151,15 @@ if __name__=='__main__':
         
                 with self.model as m:
                     m.objective = rxn.id
-                    
-                    ub = m.optimize(objective_sense = 'maximize')
-                    self.rxn_ub[rxn.id] = ub.objective_value
-        
-                    lb = m.optimize(objective_sense = 'minimize')
-                    self.rxn_lb[rxn.id] = lb.objective_value
 
+                    m.objective_direction = 'max'
+                    ub = m.slim_optimize()
+                    self.rxn_ub[rxn.id] = ub
+                    
+                    m.objective_direction = 'min'
+                    lb = m.slim_optimize()
+                    self.rxn_lb[rxn.id] = lb
+                    
             
             # calculation steady-state range with FVA
             
@@ -183,10 +185,10 @@ if __name__=='__main__':
             self.for_rev_list = []   # reversible
     
             for rxn in self.model.reactions:
-                if self.rxn_ub[rxn.id] >= 0 and self.rxn_lb[rxn.id] >= 0:
+                if self.rxn_ub[rxn.id] > 0 and self.rxn_lb[rxn.id] >= 0:
                     self.for_list.append(rxn.id)
             
-                elif self.rxn_ub[rxn.id] <= 0 and self.rxn_lb[rxn.id] <= 0:
+                elif self.rxn_ub[rxn.id] <= 0 and self.rxn_lb[rxn.id] < 0:
                     self.rev_list.append(rxn.id)
             
                 else:
@@ -216,7 +218,6 @@ if __name__=='__main__':
     
         def variable_setting(self):
             
-            self.flux = {}
             self.v = {}
     
             '''
@@ -226,9 +227,6 @@ if __name__=='__main__':
             only reverse: rxn name_rev
             reversible: both are included
             '''
-            # true flux value
-            for rxn in self.model.reactions:
-                self.flux[rxn.id] = self.m.addVar(lb = self.rxn_lb[rxn.id], ub = self.rxn_ub[rxn.id], name = f'{rxn.id} flux')
                 
             for rxn in self.model.reactions:
             
@@ -252,59 +250,23 @@ if __name__=='__main__':
             
             self.v_ub = {}  # upper bounds
             self.v_lb = {}  # lower bounds
-            self.var_o_u = {} # steady-state up
-            self.var_o_l = {} # steady-state low
+            self.var_o_u = {} # cellular-state up
+            self.var_o_l = {} # cellular-state low
             
             for var in self.v.keys():
-                
-                if var[:-4] in self.for_list:
-                    self.v_ub[var] = self.rxn_ub[var[:-4]]
-                    self.v_lb[var] = self.rxn_lb[var[:-4]]
-                    self.var_o_u[var] = self.vo_u[var[:-4]]
-                    self.var_o_l[var] = self.vo_l[var[:-4]]
-                
-                elif var[:-4] in self.rev_list:
-                    self.v_ub[var] = abs(self.rxn_lb[var[:-4]])
-                    self.v_lb[var] = abs(self.rxn_ub[var[:-4]])
-                    self.var_o_u[var] = abs(self.vo_l[var[:-4]])
-                    self.var_o_l[var] = abs(self.vo_u[var[:-4]])
 
-                # for reversible reactions
+                if '_for' in var:
+                    self.v_lb[var] = max(0, self.rxn_lb[var[:-4]]) 
+                    self.var_o_l[var] = max(0, self.vo_l[var[:-4]])  
+                    self.var_o_u[var] = max(0, self.vo_u[var[:-4]])
+                    self.v_ub[var] = max(0, self.rxn_ub[var[:-4]])
+
                 else:
-                    # forward
-                    if '_for' in var:
-                        self.v_ub[var] = self.rxn_ub[var[:-4]]
-                        self.v_lb[var] = 0
-                        
-                        if self.vo_u[var[:-4]] >= 0 and self.vo_l[var[:-4]] >= 0:
-                            self.var_o_u[var] = self.vo_u[var[:-4]]
-                            self.var_o_l[var] = self.vo_l[var[:-4]]
-
-                        elif self.vo_u[var[:-4]] >= 0 and self.vo_l[var[:-4]] < 0:
-                            self.var_o_u[var] = self.vo_u[var[:-4]]
-                            self.var_o_l[var] = 0 
-                            
-                        else:
-                            self.var_o_u[var] = 0
-                            self.var_o_l[var] = 0
-
-                    # reverse
-                    else:
-                        self.v_ub[var] = abs(self.rxn_lb[var[:-4]])
-                        self.v_lb[var] = 0   
-                        
-                        if self.vo_u[var[:-4]] <= 0 and self.vo_l[var[:-4]] <= 0:
-                            self.var_o_u[var] = abs(self.vo_l[var[:-4]])
-                            self.var_o_l[var] = abs(self.vo_u[var[:-4]])
-
-                        elif self.vo_u[var[:-4]] > 0 and self.vo_l[var[:-4]] <= 0:
-                            self.var_o_u[var] = abs(self.vo_l[var[:-4]]) 
-                            self.var_o_l[var] = 0
-                            
-                        else:
-                            self.var_o_u[var] = 0
-                            self.var_o_l[var] = 0
-    
+                    self.v_lb[var] = abs(min(0, self.rxn_ub[var[:-4]])) 
+                    self.var_o_l[var] = abs(min(0, self.vo_u[var[:-4]]))  
+                    self.var_o_u[var] = abs(min(0, self.vo_l[var[:-4]]))
+                    self.v_ub[var] = abs(min(0, self.rxn_lb[var[:-4]]))     
+               
             
             # dual, binary variables
             self.ds = {}
@@ -319,43 +281,62 @@ if __name__=='__main__':
             self.yk = {}
             self.yu = {}
             self.yd = {}
-            
+
             self.zku = {}
             self.zkl = {}
             self.zul = {}
             self.zdu = {}
+
+            # for reversible reactions
+            self.yuf = {} 
+            self.yur = {}
+            self.ydf = {}
+            self.ydr = {}
             
             for rxn in self.v.keys():
-            
+
                 self.qku[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO ub dual')
                 self.qkl[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO lb dual')
-            
+                
                 self.quu[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} up ub dual')
                 self.qul[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} up lb dual')
-                
+                    
                 self.qdu[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} down ub dual')
                 self.qdl[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} down lb dual')
-            
-                self.yu[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')     # on = 0, off = 1
-                self.yd[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')     # on = 0, off = 1
-               
+
+                self.zku[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO ub z')
+                self.zkl[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} KO lb z')
+                self.zul[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} up lb z')
+                self.zdu[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} down ub z')
+
                 
-                self.zku[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} KO ub z')
-                self.zkl[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} KO lb z')
-                self.zul[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} up lb z')
-                self.zdu[rxn] = self.m.addVar(lb = -1*self.ub_default, ub = self.ub_default, name = f'{rxn} down ub z')
-            
+                if rxn[:-4] in self.for_rev_list:
+
+                    if '_for' in rxn:
+                        self.yuf[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')
+                        self.ydf[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')
+                    else:
+                        self.yur[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')
+                        self.ydr[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')
+
+                else:
+                    self.yu[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')     # on = 0, off = 1
+                    self.yd[rxn] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} up on/off')     # on = 0, off = 1
+
+                
                 if rxn[:-4] == self.biomass_rxn or rxn[:-4] == 'ATPM':
                     self.d_bio_atp[rxn] = self.m.addVar(lb = 0, ub = self.ub_default, name = f'{rxn} min dual')
-    
+
+            
             # binary variables for KO
-                for rxn in self.for_list:
-                    self.yk[f'{rxn}_for'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1     
-                for rxn in self.rev_list:
-                    self.yk[f'{rxn}_rev'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1
-                for rxn in self.for_rev_list:
-                    self.yk[f'{rxn}'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1         
-                    
+            for rxn in self.for_list:
+                self.yk[f'{rxn}_for'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1     
+            for rxn in self.rev_list:
+                self.yk[f'{rxn}_rev'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1
+            for rxn in self.for_rev_list:
+                self.yk[f'{rxn}'] = self.m.addVar(vtype = GRB.BINARY, name = f'{rxn} KO on/off')     # on = 0, off = 1         
+
+            
             for met in self.model.metabolites:
                 self.ds[met.id] = self.m.addVar(lb = self.lb_default, ub = self.ub_default, name = f'{met.id} stoich')
     
@@ -364,8 +345,9 @@ if __name__=='__main__':
         
         def make_S_matrix(self):
             # S_matrix (forward, reverse reaction 반영)
-    
-            S_matrix = {}
+            # S*v_forward - S*v_reverse = 0
+            S_matrix_v = {}
+
             
             for var in tqdm(self.v.keys()):
                 
@@ -383,7 +365,7 @@ if __name__=='__main__':
                     coff_list = reactant_coff_list + product_coff_list
                     
                     for met, coff in zip(met_list, coff_list):
-                        S_matrix[(var, met.id)] = coff
+                        S_matrix_v[(var, met.id)] = coff
                 
                 else:
                     reactant_list = list(rxn.products)
@@ -397,18 +379,17 @@ if __name__=='__main__':
                     
                                          
                     for met, coff in zip(met_list, coff_list):
-                        S_matrix[(var, met.id)] = coff
+                        S_matrix_v[(var, met.id)] = coff
                         
             
-            pair, self.coff_value = multidict(S_matrix)
-            self.pair = tuplelist(pair)
+            pair_v, self.coff_value_v = multidict(S_matrix_v)
+            self.pair_v = tuplelist(pair_v)
     
         
         def add_constraints(self):
     
             '''
             <primal constraints>
-            0. flux = vf-vr
             1. Stoichiometric constraints 
             2. KO constraints
             3. UP_regulation constraints
@@ -416,27 +397,14 @@ if __name__=='__main__':
             5. minimal biomass, ATPM constraints
             '''
 
-            # 0. flux constraints
-            
-            for rxn in self.flux.keys():
-
-                if rxn in self.for_list:
-                    self.m.addConstr(self.flux[rxn] - self.v[f'{rxn}_for'] == 0)
-
-                elif rxn in self.rev_list:
-                    self.m.addConstr(self.flux[rxn] + self.v[f'{rxn}_rev'] == 0)
-
-                else:
-                    self.m.addConstr(self.flux[rxn] - self.v[f'{rxn}_for'] + self.v[f'{rxn}_rev'] == 0)
-            
-            self.m.update()
-
+    
             
             # 1. Stoichiometric constraints
             
             for met in tqdm(self.model.metabolites):
-                self.m.addConstr(quicksum( self.v[val_id]*self.coff_value[val_id, met_id] for val_id, met_id in self.pair.select('*', met.id) ) == 0,
-                           name = f'{met.id} mass balance')
+
+                self.m.addConstr(quicksum( self.v[val_id]*self.coff_value_v[val_id, met_id] for val_id, met_id in self.pair_v.select('*', met.id) ) == 0,
+                           name = f'{met.id} mass balance v')
             
             self.m.update()
     
@@ -451,14 +419,51 @@ if __name__=='__main__':
                 else:
                     self.m.addConstr(self.v[var] >= self.v_lb[var] * self.yk[var])
                     self.m.addConstr(self.v[var] <= self.v_ub[var] * self.yk[var])
+
+            
+            for var in self.v.keys():
+
+                if var[:-4] in self.for_rev_list:
+                    if '_for' in var:
+                        # up_f
+                        self.m.addConstr(self.v[var] >= ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C ) * ( 1-self.yuf[var] ) + ( self.v_lb[var] * self.yuf[var] ))
+                        self.m.addConstr(self.v[var] <= self.v_ub[var])
+                    
+                        # dw_f
+                        self.m.addConstr(self.v[var] >= self.v_lb[var])
+                        self.m.addConstr(self.v[var] <= ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C ) * ( 1-self.ydf[var] ) + ( self.v_ub[var] * self.ydf[var] ))
+
+                        # reverse reaction switch
+                        self.m.addConstr(self.v[f'{var[:-4]}_rev'] >= self.v_lb[f'{var[:-4]}_rev'] * self.yuf[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_rev'] <= self.v_ub[f'{var[:-4]}_rev'] * self.yuf[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_rev'] >= self.v_lb[f'{var[:-4]}_rev'] * self.ydf[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_rev'] <= self.v_ub[f'{var[:-4]}_rev'] * self.ydf[var])
+                        
+                    else:
+                        # up_r
+                        self.m.addConstr(self.v[var] >= ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C ) * ( 1-self.yur[var] ) + ( self.v_lb[var] * self.yur[var] ))
+                        self.m.addConstr(self.v[var] <= self.v_ub[var])
+
+                        # dw_r
+                        self.m.addConstr(self.v[var] >= self.v_lb[var])
+                        self.m.addConstr(self.v[var] <= ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C ) * ( 1-self.ydr[var] ) + ( self.v_ub[var] * self.ydr[var] ))
+
+                        # reverse reaction switch
+                        self.m.addConstr(self.v[f'{var[:-4]}_for'] >= self.v_lb[f'{var[:-4]}_for'] * self.yur[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_for'] <= self.v_ub[f'{var[:-4]}_for'] * self.yur[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_for'] >= self.v_lb[f'{var[:-4]}_for'] * self.ydr[var])
+                        self.m.addConstr(self.v[f'{var[:-4]}_for'] <= self.v_ub[f'{var[:-4]}_for'] * self.ydr[var])
                 
-                # 3. Up regulation constraints
-                self.m.addConstr(self.v[var] >= ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C ) * ( 1-self.yu[var] ) + ( self.v_lb[var] * self.yu[var] ))
-                self.m.addConstr(self.v[var] <= self.v_ub[var])
+
                 
-                # 4. Down regulation constraints
-                self.m.addConstr(self.v[var] >= self.v_lb[var])
-                self.m.addConstr(self.v[var] <= ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C ) * ( 1-self.yd[var] ) + ( self.v_ub[var] * self.yd[var] ))
+                else:
+                    # 3. Up regulation constraints
+                    self.m.addConstr(self.v[var] >= ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C ) * ( 1-self.yu[var] ) + ( self.v_lb[var] * self.yu[var] ))
+                    self.m.addConstr(self.v[var] <= self.v_ub[var])
+                
+                    # 4. Down regulation constraints
+                    self.m.addConstr(self.v[var] >= self.v_lb[var])
+                    self.m.addConstr(self.v[var] <= ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C ) * ( 1-self.yd[var] ) + ( self.v_ub[var] * self.yd[var] ))
             
             self.m.update()
     
@@ -476,15 +481,15 @@ if __name__=='__main__':
             for var in tqdm(self.v.keys()):
                 
                 if var[:-4] == self.biomass_rxn:
-                    self.m.addConstr(quicksum(self.coff_value[var_id, met_id] * self.ds[met_id] for var_id, met_id in self.pair.select(var, '*')) 
+                    self.m.addConstr(quicksum(self.coff_value_v[var_id, met_id] * self.ds[met_id] for var_id, met_id in self.pair_v.select(var, '*')) 
                                 + self.qku[var] - self.qkl[var] + self.quu[var] - self.qul[var] + self.qdu[var] - self.qdl[var] - self.d_bio_atp[var] >= 1 - self.eps)
                 
                 elif var[:-4] == 'ATPM':
-                    self.m.addConstr(quicksum(self.coff_value[val_id, met_id] * self.ds[met_id] for val_id, met_id in self.pair.select(var, '*')) 
+                    self.m.addConstr(quicksum(self.coff_value_v[val_id, met_id] * self.ds[met_id] for val_id, met_id in self.pair_v.select(var, '*')) 
                                 + self.qku[var] - self.qkl[var] + self.quu[var] - self.qul[var] + self.qdu[var] - self.qdl[var] - self.d_bio_atp[var] >= -1*self.eps)
                 
                 else:
-                    self.m.addConstr(quicksum(self.coff_value[val_id, met_id] * self.ds[met_id] for val_id, met_id in self.pair.select(var, '*')) 
+                    self.m.addConstr(quicksum(self.coff_value_v[val_id, met_id] * self.ds[met_id] for val_id, met_id in self.pair_v.select(var, '*')) 
                                 + self.qku[var] - self.qkl[var] + self.quu[var] - self.qul[var] + self.qdu[var] - self.qdl[var]  >= -1*self.eps)
                 
                 
@@ -506,6 +511,29 @@ if __name__=='__main__':
                     self.m.addConstr(self.zkl[var] <= self.ub_default * self.yk[var[:-4]])
                     self.m.addConstr(self.zkl[var] >= self.qkl[var] - self.ub_default*(1 - self.yk[var[:-4]]))
                     self.m.addConstr(self.zkl[var] <= self.qkl[var])
+
+                    if '_for' in var:
+                        self.m.addConstr(self.zul[var] >= 0)
+                        self.m.addConstr(self.zul[var] <= self.ub_default * self.yuf[var])
+                        self.m.addConstr(self.zul[var] >= self.qul[var] - self.ub_default*(1 - self.yuf[var]))
+                        self.m.addConstr(self.zul[var] <= self.qul[var])
+                        
+                        self.m.addConstr(self.zdu[var] >= 0)
+                        self.m.addConstr(self.zdu[var] <= self.ub_default * self.ydf[var])
+                        self.m.addConstr(self.zdu[var] >= self.qdu[var] - self.ub_default*(1 - self.ydf[var]))
+                        self.m.addConstr(self.zdu[var] <= self.qdu[var])
+
+                    else:
+                        self.m.addConstr(self.zul[var] >= 0)
+                        self.m.addConstr(self.zul[var] <= self.ub_default * self.yur[var])
+                        self.m.addConstr(self.zul[var] >= self.qul[var] - self.ub_default*(1 - self.yur[var]))
+                        self.m.addConstr(self.zul[var] <= self.qul[var])
+                        
+                        self.m.addConstr(self.zdu[var] >= 0)
+                        self.m.addConstr(self.zdu[var] <= self.ub_default * self.ydr[var])
+                        self.m.addConstr(self.zdu[var] >= self.qdu[var] - self.ub_default*(1 - self.ydr[var]))
+                        self.m.addConstr(self.zdu[var] <= self.qdu[var])
+                        
                 else:
                     self.m.addConstr(self.zku[var] >= 0)
                     self.m.addConstr(self.zku[var] <= self.ub_default * self.yk[var])
@@ -516,34 +544,33 @@ if __name__=='__main__':
                     self.m.addConstr(self.zkl[var] <= self.ub_default * self.yk[var])
                     self.m.addConstr(self.zkl[var] >= self.qkl[var] - self.ub_default*(1 - self.yk[var]))
                     self.m.addConstr(self.zkl[var] <= self.qkl[var])
-    
                 
-                self.m.addConstr(self.zul[var] >= 0)
-                self.m.addConstr(self.zul[var] <= self.ub_default * self.yu[var])
-                self.m.addConstr(self.zul[var] >= self.qul[var] - self.ub_default*(1 - self.yu[var]))
-                self.m.addConstr(self.zul[var] <= self.qul[var])
-                
-                self.m.addConstr(self.zdu[var] >= 0)
-                self.m.addConstr(self.zdu[var] <= self.ub_default * self.yd[var])
-                self.m.addConstr(self.zdu[var] >= self.qdu[var] - self.ub_default*(1 - self.yd[var]))
-                self.m.addConstr(self.zdu[var] <= self.qdu[var])
-                
+                    self.m.addConstr(self.zul[var] >= 0)
+                    self.m.addConstr(self.zul[var] <= self.ub_default * self.yu[var])
+                    self.m.addConstr(self.zul[var] >= self.qul[var] - self.ub_default*(1 - self.yu[var]))
+                    self.m.addConstr(self.zul[var] <= self.qul[var])
+                    
+                    self.m.addConstr(self.zdu[var] >= 0)
+                    self.m.addConstr(self.zdu[var] <= self.ub_default * self.yd[var])
+                    self.m.addConstr(self.zdu[var] >= self.qdu[var] - self.ub_default*(1 - self.yd[var]))
+                    self.m.addConstr(self.zdu[var] <= self.qdu[var])
+
             self.m.update()
-    
-    
+
+            
             '''
             <Constraints for strong duality>
             primal obj function(max) = dual obj function(min)
             '''
-            primal_obj = self.v[f'{self.biomass_rxn}_for'] - quicksum(self.v[var] for var in self.v.keys())*self.eps
             
-            dual_obj = (-1*( ( self.biomass_lb * self.d_bio_atp[f'{self.biomass_rxn}_for'] ) + ( self.v_lb['ATPM_for'] * self.d_bio_atp['ATPM_for'] ) )
-                        + quicksum( ( (self.zku[var]*self.v_ub[var]) - (self.zkl[var]*self.v_lb[var]) ) for var in self.v.keys() )
-                        + quicksum( self.quu[var]*self.v_ub[var] - self.zul[var]*self.v_lb[var] + ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C )*( self.zul[var] - self.qul[var] ) for var in self.v.keys() )
-                        + quicksum( self.zdu[var]*self.v_ub[var] - self.qdl[var]*self.v_lb[var] + ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C )*( self.qdu[var] - self.zdu[var] ) for var in self.v.keys() )
-                       )
-            
-            self.m.addConstr(primal_obj == dual_obj)
+            self.m.addConstr(
+                self.v[f'{self.biomass_rxn}_for'] - quicksum(self.v[var] for var in self.v.keys())*self.eps
+                == -1*( ( self.biomass_lb * self.d_bio_atp[f'{self.biomass_rxn}_for'] ) + ( self.v_lb['ATPM_for'] * self.d_bio_atp['ATPM_for'] ) )
+            + quicksum( ( (self.zku[var]*self.v_ub[var]) - (self.zkl[var]*self.v_lb[var]) ) for var in self.v.keys() )
+            + quicksum( self.quu[var]*self.v_ub[var] - self.zul[var]*self.v_lb[var] + ( self.var_o_u[var]*(1-self.C) + self.v_ub[var]*self.C )*( self.zul[var] - self.qul[var] ) for var in self.v.keys() ) 
+            + quicksum( self.zdu[var]*self.v_ub[var] - self.qdl[var]*self.v_lb[var] + ( self.var_o_l[var]*(1-self.C) + self.v_lb[var]*self.C )*( self.qdu[var] - self.zdu[var] ) for var in self.v.keys() ) 
+            )
+
             
             self.m.update()
     
@@ -559,40 +586,45 @@ if __name__=='__main__':
             '''
     
             # 1. Each reaction can have only one(or zero) regulation state.
-    
+
             for var in self.v.keys():
                 if var[:-4] in self.for_rev_list:
-                    self.m.addConstr((1-self.yk[var[:-4]]) + (1-self.yu[var]) + (1-self.yd[var]) <= 1)
+                    var = var[:-4]
+                    self.m.addConstr((1-self.yk[var]) + (1-self.yuf[f'{var}_for']) + (1-self.ydf[f'{var}_for']) + (1-self.yur[f'{var}_rev']) + (1-self.ydr[f'{var}_rev']) <= 1.1)
                 else:
-                    self.m.addConstr((1-self.yk[var]) + (1-self.yu[var]) + (1-self.yd[var]) <= 1)
+                    self.m.addConstr((1-self.yk[var]) + (1-self.yu[var]) + (1-self.yd[var]) <= 1.1)
                     
+            self.m.update()
             
             # 2. Maximum regulations
+                
+            rev = quicksum((1-self.yk[rxn]) + (1-self.yuf[f'{rxn}_for']) + (1-self.ydf[f'{rxn}_for'])
+                           + (1-self.yur[f'{rxn}_rev']) + (1-self.ydr[f'{rxn}_rev']) for rxn in self.for_rev_list)
             
-            rev = quicksum((1-self.yk[var[:-4]]) + (1-self.yu[var]) + (1-self.yd[var]) for var in self.v.keys() if var[:-4] in self.for_rev_list)
             irrev = quicksum((1-self.yk[var]) + (1-self.yu[var]) + (1-self.yd[var]) for var in self.v.keys() if var[:-4] not in self.for_rev_list)
             
             self.m.addConstr(rev + irrev <= self.L + 0.1)
-            
-            # 3. In reversible reactions, forward and reverse reactions cannot be up or down-regulated at the same time.
-            
-            for rxn in self.for_rev_list:    
-                self.m.addConstr(self.yu[f'{rxn}_for'] + self.yu[f'{rxn}_rev'] + self.yd[f'{rxn}_for'] + self.yd[f'{rxn}_rev'] >= 2.9)
                
-                
+            self.m.update()
+            
             # 4. Reactions that are NOT linked with gene_reaction_rule cannot be manipulated. (yk, yu, yd values are always 1) 
     
             for val in self.v.keys():
                 gpr = self.model.reactions.get_by_id(val[:-4]).gene_reaction_rule
                 
                 if gpr == '' or 's' in gpr or 'ex' in val:    # not linked GPR or spontaneous reactions    
-                    self.m.addConstr(self.yu[val] == 1)
-                    self.m.addConstr(self.yd[val] == 1)
             
                     if val[:-4] in self.for_rev_list:
-                        self.m.addConstr(self.yk[val[:-4]] == 1)
+                        val = val[:-4]
+                        self.m.addConstr(self.yk[val] >= 0.9)
+                        self.m.addConstr(self.yuf[f'{val}_for'] >= 0.9)
+                        self.m.addConstr(self.ydf[f'{val}_for'] >= 0.9)
+                        self.m.addConstr(self.yur[f'{val}_rev'] >= 0.9)
+                        self.m.addConstr(self.ydr[f'{val}_rev'] >= 0.9)
                     else:
-                        self.m.addConstr(self.yk[val] == 1)
+                        self.m.addConstr(self.yk[val] >= 0.9)
+                        self.m.addConstr(self.yu[val] >= 0.9)
+                        self.m.addConstr(self.yd[val] >= 0.9)
 
             
             # 5. Do not KO Essential genes: make biomass < min_biomass when Knockouted
@@ -603,9 +635,9 @@ if __name__=='__main__':
                 if val[:-4] in essential_list:
 
                     if val[:-4] in self.for_rev_list:
-                        self.m.addConstr(self.yk[val[:-4]] == 1)
+                        self.m.addConstr(self.yk[val[:-4]] >= 0.9)
                     else:
-                        self.m.addConstr(self.yk[val] == 1)
+                        self.m.addConstr(self.yk[val] >= 0.9)
                     
             
             self.m.update()
@@ -615,10 +647,13 @@ if __name__=='__main__':
             <Objective function>
             Maximize target chemical
             '''
-            
-            self.m.setObjective(self.flux[self.target_rxn], GRB.MAXIMIZE)
+            if self.target_rxn in self.for_rev_list:
+                self.m.setObjective(self.v[f'{self.target_rxn}_for'] - self.v[f'{self.target_rxn}_rev'], GRB.MAXIMIZE)
 
-        
+            else:
+                self.m.setObjective(self.v[f'{self.target_rxn}_for'], GRB.MAXIMIZE)
+
+            self.m.update()
     
         def return_results(self):
     
@@ -635,7 +670,7 @@ if __name__=='__main__':
                 self.m.optimize()
                 opt_status = self.m.status
                 
-                if opt_status in (2, 13):
+                if opt_status == 2:
     
                     manipulation_target = []
                     manipulation_state = []
@@ -655,6 +690,26 @@ if __name__=='__main__':
                         if yd_value.x < 0.1:
                             manipulation_target.append(rxn_id)
                             manipulation_state.append('_DW')
+
+                    for rxn_id, yuf_value in self.yuf.items():
+                        if yuf_value.x < 0.1:
+                            manipulation_target.append(rxn_id)
+                            manipulation_state.append('_DW')
+
+                    for rxn_id, ydf_value in self.ydf.items():
+                        if ydf_value.x < 0.1:
+                            manipulation_target.append(rxn_id)
+                            manipulation_state.append('_DW')
+
+                    for rxn_id, yur_value in self.yur.items():
+                        if yur_value.x < 0.1:
+                            manipulation_target.append(rxn_id)
+                            manipulation_state.append('_DW')
+
+                    for rxn_id, ydr_value in self.ydr.items():
+                        if ydr_value.x < 0.1:
+                            manipulation_target.append(rxn_id)
+                            manipulation_state.append('_DW')
     
                     
                     for tgt, ste in zip(manipulation_target, manipulation_state):
@@ -667,20 +722,27 @@ if __name__=='__main__':
                     # manipulated reactions in previous step
                     for rxn_id in manipulation_target:
 
-                        if '_for' not in rxn_id and '_rev' not in rxn_id:
-                            self.m.addConstr(self.yu[f'{rxn_id}_for'] == 1)
-                            self.m.addConstr(self.yd[f'{rxn_id}_rev'] == 1)
+                        if '_for' not in rxn_id and '_rev' not in rxn_id:    # KO of reversible reaction 
 
-                        else:
-                            self.m.addConstr(self.yu[rxn_id] == 1)
-                            self.m.addConstr(self.yd[rxn_id] == 1)
-                            
+                            self.m.addConstr(self.yk[rxn_id] >= 0.9)
+                            self.m.addConstr(self.yuf[f'{rxn_id}_for'] >= 0.9)
+                            self.m.addConstr(self.ydf[f'{rxn_id}_for'] >= 0.9)
+                            self.m.addConstr(self.yur[f'{rxn_id}_rev'] >= 0.9)
+                            self.m.addConstr(self.ydr[f'{rxn_id}_rev'] >= 0.9)
 
-                        if rxn_id[:-4] in self.for_rev_list:
-                            self.m.addConstr(self.yk[rxn_id[:-4]] == 1)
+                        else:                                                                  
+                            if rxn_id[:-4] in self.for_rev_list:             # UP, DW of reversible reaction
+                                rxn_id = rxn_id[:-4]
+                                self.m.addConstr(self.yk[rxn_id] >= 0.9)
+                                self.m.addConstr(self.yuf[f'{rxn_id}_for'] >= 0.9)
+                                self.m.addConstr(self.ydf[f'{rxn_id}_for'] >= 0.9)
+                                self.m.addConstr(self.yur[f'{rxn_id}_rev'] >= 0.9)
+                                self.m.addConstr(self.ydr[f'{rxn_id}_rev'] >= 0.9)
                             
-                        else:
-                            self.m.addConstr(self.yk[rxn_id] == 1)
+                            else:                                            # KO, UP, DW of irreversible reactions
+                                self.m.addConstr(self.yk[rxn_id] >= 0.9)
+                                self.m.addConstr(self.yu[rxn_id] >= 0.9)
+                                self.m.addConstr(self.yd[rxn_id] >= 0.9)
 
                     self.m.update()
                         
@@ -778,6 +840,5 @@ if __name__=='__main__':
     print(df)
     print()
     print('status:', opt_status)
-
 
 
